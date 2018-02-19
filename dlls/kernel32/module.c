@@ -1216,7 +1216,8 @@ static HMODULE load_library( const UNICODE_STRING *libname, DWORD flags )
         * 'native' libraries only
         */
     if (load_library_as_datafile( libname->Buffer, &hModule, flags )) goto done;
-    flags |= DONT_RESOLVE_DLL_REFERENCES; /* Just in case */
+    if (flags & (LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_DATAFILE_EXCLUSIVE))
+        flags |= DONT_RESOLVE_DLL_REFERENCES; /* Just in case */
     /* Fallback to normal behaviour */
     
 
