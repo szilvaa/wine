@@ -1127,6 +1127,7 @@ static BOOL load_library_as_datafile( LPCWSTR name, HMODULE *hmod, DWORD flags )
     HANDLE mapping;
     HMODULE module;
     DWORD sharing = FILE_SHARE_READ;
+    PIMAGE_NT_HEADERS headers;
 
     *hmod = 0;
 
@@ -1148,10 +1149,22 @@ static BOOL load_library_as_datafile( LPCWSTR name, HMODULE *hmod, DWORD flags )
     if (!module) return FALSE;
 
     /* make sure it's a valid PE file */
-    if (!RtlImageNtHeader(module))
+    headers = RtlImageNtHeader(module);
+    if (!headers)
     {
         UnmapViewOfFile( module );
         return FALSE;
+    }
+    /* if this isn't an explicit request to load as datafile then we must make sure that
+       there's no executable code. If executable code is present then we should fail.
+    */
+    if (!(flags & (LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_DATAFILE_EXCLUSIVE)))
+    {
+        if (headers->OptionalHeader.AddressOfEntryPoint != 0)
+        {
+            UnmapViewOfFile( module );
+            return FALSE;    
+        }
     }
     *hmod = (HMODULE)((char *)module + 1);  /* set low bit of handle to indicate datafile module */
     return TRUE;
@@ -1188,26 +1201,24 @@ static HMODULE load_library( const UNICODE_STRING *libname, DWORD flags )
         load_path = MODULE_get_dll_load_path( flags & LOAD_WITH_ALTERED_SEARCH_PATH ? libname->Buffer : NULL, -1 );
     if (!load_path) return 0;
 
-    if (flags & (LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_DATAFILE_EXCLUSIVE))
+    ULONG_PTR magic;
+
+    LdrLockLoaderLock( 0, NULL, &magic );
+    if (!LdrGetDllHandle( load_path, flags, libname, &hModule ))
     {
-        ULONG_PTR magic;
-
-        LdrLockLoaderLock( 0, NULL, &magic );
-        if (!LdrGetDllHandle( load_path, flags, libname, &hModule ))
-        {
-            LdrAddRefDll( 0, hModule );
-            LdrUnlockLoaderLock( 0, magic );
-            goto done;
-        }
+        LdrAddRefDll( 0, hModule );
         LdrUnlockLoaderLock( 0, magic );
-
-        /* The method in load_library_as_datafile allows searching for the
-         * 'native' libraries only
-         */
-        if (load_library_as_datafile( libname->Buffer, &hModule, flags )) goto done;
-        flags |= DONT_RESOLVE_DLL_REFERENCES; /* Just in case */
-        /* Fallback to normal behaviour */
+        goto done;
     }
+    LdrUnlockLoaderLock( 0, magic );
+
+    /* The method in load_library_as_datafile allows searching for the
+        * 'native' libraries only
+        */
+    if (load_library_as_datafile( libname->Buffer, &hModule, flags )) goto done;
+    flags |= DONT_RESOLVE_DLL_REFERENCES; /* Just in case */
+    /* Fallback to normal behaviour */
+    
 
     nts = LdrLoadDll( load_path, flags, libname, &hModule );
     if (nts != STATUS_SUCCESS)
